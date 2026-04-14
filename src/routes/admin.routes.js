@@ -22,7 +22,11 @@ router.put('/orders/:id/status', adminController.updateOrderStatus);
 // --- Platform Owner (OWNER) Routes ---
 router.get('/platform-stats', authorize('OWNER'), adminController.getPlatformStats);
 router.get('/platform-sales-growth', authorize('OWNER'), adminController.getPlatformSalesGrowth);
+router.get('/platform-onboarding', authorize('OWNER'), adminController.getPlatformOnboarding);
+router.get('/platform-orders', authorize('OWNER'), adminController.getPlatformOrders);
+router.get('/platform-inventory', authorize('OWNER'), adminController.getPlatformInventory);
 router.get('/shops', authorize('OWNER'), adminController.getAllShops);
 router.post('/shops/:id/verify', authorize('OWNER'), adminController.verifyShopStatus);
+router.delete('/shops/:id', authorize('OWNER'), adminController.deleteShopRequest);
 
 module.exports = router;
