@@ -38,7 +38,7 @@ app.use('/api/shop', shopRoutes); // Frontend calls /api/shop/setup
 
 // Health Check
 app.get('/api/health', (req, res) => {
-    res.json({ status: 'UP', message: 'Node.js Express Backend is active' });
+    res.json({ status: 'UP', message: 'Node.js Express Backend is active - v1.0.2 Verification' });
 });
 
 // Database and Server Init
