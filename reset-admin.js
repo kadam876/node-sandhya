@@ -3,8 +3,8 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const User = require('./src/models/User');
 
-const EMAIL    = process.argv[2] || 'admin@sandhya.com';
-const PASSWORD = process.argv[3] || 'admin123';
+const EMAIL    = process.argv[2] || 'owner@sandhya.com';
+const PASSWORD = process.argv[3] || 'OwnerPassword123!';
 
 async function resetAdminPassword() {
     try {
@@ -26,10 +26,13 @@ async function resetAdminPassword() {
             // Create admin if not exists
             const hashed = await bcrypt.hash(PASSWORD, 8);
             user = new User({
-                name: 'Admin',
+                name: 'Sandhya Fashion Owner',
                 email: EMAIL,
                 password: hashed,
                 role: 'OWNER',
+                shopName: 'Sandhya Fashion',
+                phone: '+917573943992',
+                address: 'Shop No- B/5083, Upper Ground Floor, Global Textile Market Surat 395010',
                 isVerified: true,
                 isActive: true,
                 isProfileComplete: true

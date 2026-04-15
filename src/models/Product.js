@@ -14,7 +14,8 @@ const productSchema = new mongoose.Schema({
     badgeColor: String,
     adminId: { type: String, index: true },
     catalogueId: { type: String, index: true },
-    isActive: { type: Boolean, default: true, index: true }
+    isActive: { type: Boolean, default: true, index: true },
+    seeded: { type: Boolean, default: false }
 }, { collection: 'products' });
 
 productSchema.index({ isActive: 1, category: 1 });

@@ -24,6 +24,7 @@ const orderSchema = new mongoose.Schema({
     status: { type: String, index: true },
     trackingNumber: String,
     orderType: String,
+    seeded: { type: Boolean, default: false },
     razorpayOrderId: String,
     razorpayPaymentId: String
 }, { collection: 'orders' });
