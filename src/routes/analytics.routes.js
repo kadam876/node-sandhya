@@ -13,6 +13,7 @@ router.get('/categories', analyticsController.getCategoryDistribution);
 router.get('/order-status', analyticsController.getOrderStatusDistribution);
 router.get('/top-products', analyticsController.getTopSellingProducts);
 router.get('/predictions', analyticsController.getSalesPredictions);
+router.get('/growth', analyticsController.getGrowthData);
 
 module.exports = router;
 
