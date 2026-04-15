@@ -13,7 +13,8 @@ const generateToken = (user) => {
 
 exports.register = async (req, res) => {
     try {
-        const role = req.query.role || req.body.role || 'CUSTOMER';
+        // Force role to CUSTOMER for all public signups
+        const role = 'CUSTOMER';
         const { name, email, password, phone } = req.body;
 
         const existingUser = await User.findOne({ email });
@@ -113,7 +114,7 @@ exports.googleLogin = async (req, res) => {
             user = new User({
                 name: name,
                 email: email,
-                role: role || 'CUSTOMER',
+                role: 'CUSTOMER',
                 isVerified: true
             });
             await user.save();
