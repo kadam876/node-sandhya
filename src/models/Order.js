@@ -14,13 +14,18 @@ const orderSchema = new mongoose.Schema({
     userId: { type: String, index: true },
     adminId: { type: String, index: true },
     items: [orderItemSchema],
+    subtotal: Number,
+    gstAmount: Number,
+    platformCharge: Number,
     totalAmount: Number,
     shippingAddress: String,
     paymentMethod: String,
     orderDate: { type: Date, default: Date.now, index: true },
-    status: { type: String, index: true }, // PENDING, SHIPPED, DELIVERED, CANCELLED
+    status: { type: String, index: true },
     trackingNumber: String,
-    orderType: String // RETAIL, WHOLESALE
+    orderType: String,
+    razorpayOrderId: String,
+    razorpayPaymentId: String
 }, { collection: 'orders' });
 
 orderSchema.set('toJSON', {

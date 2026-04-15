@@ -1,20 +1,30 @@
 const Order = require('../models/Order');
 const Product = require('../models/Product');
-const mongoose = require('mongoose');
+
+// Helper: match orders belonging to this admin — by adminId field OR by products they own
+const getAdminOrderMatch = async (adminId) => {
+    const ownedProductIds = await Product.find({ adminId, isActive: true }).distinct('_id');
+    const ownedProductIdStrings = ownedProductIds.map(id => id.toString());
+    return {
+        $or: [
+            { adminId },
+            { 'items.productId': { $in: ownedProductIdStrings } }
+        ]
+    };
+};
 
 exports.getDashboardStats = async (req, res) => {
     try {
         const adminId = req.user.id;
         const totalProducts = await Product.countDocuments({ adminId, isActive: true });
         const lowStockItems = await Product.countDocuments({ adminId, isActive: true, stockQuantity: { $lt: 20 } });
-        const totalOrders = await Order.countDocuments({ adminId });
-        
+        const orderMatch = await getAdminOrderMatch(adminId);
+        const totalOrders = await Order.countDocuments(orderMatch);
         const revenueResult = await Order.aggregate([
-            { $match: { adminId } },
-            { $group: { _id: null, total: { $sum: "$totalAmount" } } }
+            { $match: orderMatch },
+            { $group: { _id: null, total: { $sum: '$totalAmount' } } }
         ]);
         const totalRevenue = revenueResult.length > 0 ? revenueResult[0].total : 0;
-
         res.json({ totalProducts, totalOrders, lowStockItems, totalRevenue });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -25,129 +35,94 @@ exports.getFullDashboard = async (req, res) => {
     try {
         const adminId = req.user.id;
         const { period = 'month' } = req.query;
-        
+        const orderMatch = await getAdminOrderMatch(adminId);
+
         // 1. Stats
         const totalProducts = await Product.countDocuments({ adminId, isActive: true });
         const lowStockItems = await Product.countDocuments({ adminId, isActive: true, stockQuantity: { $lt: 20 } });
-        const totalOrders = await Order.countDocuments({ adminId });
+        const totalOrders = await Order.countDocuments(orderMatch);
         const revenueResult = await Order.aggregate([
-            { $match: { adminId } },
-            { $group: { _id: null, total: { $sum: "$totalAmount" } } }
+            { $match: orderMatch },
+            { $group: { _id: null, total: { $sum: '$totalAmount' } } }
         ]);
         const totalRevenue = revenueResult.length > 0 ? revenueResult[0].total : 0;
 
-        // 1.1 Calculate Growth (Actual Month-over-Month logic)
+        // Growth
         const now = new Date();
         const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
         const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-
-        const growthData = await Promise.all([
-            // This month revenue
+        const [currRes, prevRes] = await Promise.all([
             Order.aggregate([
-                { $match: { adminId, orderDate: { $gte: thisMonthStart }, status: { $ne: 'CANCELLED' } } },
-                { $group: { _id: null, total: { $sum: "$totalAmount" } } }
+                { $match: { ...orderMatch, orderDate: { $gte: thisMonthStart }, status: { $ne: 'CANCELLED' } } },
+                { $group: { _id: null, total: { $sum: '$totalAmount' } } }
             ]),
-            // Last month revenue
             Order.aggregate([
-                { $match: { adminId, orderDate: { $gte: lastMonthStart, $lt: thisMonthStart }, status: { $ne: 'CANCELLED' } } },
-                { $group: { _id: null, total: { $sum: "$totalAmount" } } }
-            ]),
-            // Total Products (Monthly growth - simplified)
-            Product.countDocuments({ adminId, isActive: true, createdAt: { $lt: thisMonthStart } })
+                { $match: { ...orderMatch, orderDate: { $gte: lastMonthStart, $lt: thisMonthStart }, status: { $ne: 'CANCELLED' } } },
+                { $group: { _id: null, total: { $sum: '$totalAmount' } } }
+            ])
         ]);
+        const currRevenue = currRes.length > 0 ? currRes[0].total : 0;
+        const prevRevenue = prevRes.length > 0 ? prevRes[0].total : 0;
+        const revGrowth = prevRevenue > 0
+            ? Math.round(((currRevenue - prevRevenue) / prevRevenue) * 100)
+            : (currRevenue > 0 ? 100 : 0);
 
-        const currRevenue = growthData[0].length > 0 ? growthData[0][0].total : 0;
-        const prevRevenue = growthData[1].length > 0 ? growthData[1][0].total : 0;
-        const revGrowth = prevRevenue > 0 ? Math.round(((currRevenue - prevRevenue) / prevRevenue) * 100) : (currRevenue > 0 ? 100 : 0);
-        
-        const stats = { 
-            totalProducts, 
-            lowStockItems, 
-            totalOrders, 
-            totalRevenue,
-            revenueGrowth: revGrowth,
-            orderGrowth: 15, // Stub for now or could calculate similarly
-            productGrowth: 8,
-            lowStockGrowth: -5
-        };
+        const stats = { totalProducts, lowStockItems, totalOrders, totalRevenue, revenueGrowth: revGrowth, orderGrowth: 0, productGrowth: 0, lowStockGrowth: 0 };
 
-        // 2. Sales Over Time (Based on period)
+        // 2. Sales Over Time
         let startDate = new Date();
         if (period === 'week') startDate.setDate(startDate.getDate() - 7);
         else if (period === 'year') startDate.setFullYear(startDate.getFullYear() - 1);
-        else startDate.setDate(startDate.getDate() - 30); // default month
+        else startDate.setDate(startDate.getDate() - 30);
 
         const salesByDate = await Order.aggregate([
-            { $match: { adminId, orderDate: { $gte: startDate } } },
-            {
-                $group: {
-                    _id: { $dateToString: { format: period === 'year' ? "%Y-%m" : "%Y-%m-%d", date: "$orderDate" } },
-                    sales: { $sum: "$totalAmount" },
-                    orders: { $sum: 1 }
-                }
-            },
-            { $sort: { "_id": 1 } },
-            { $project: { _id: 0, date: "$_id", sales: 1, orders: 1 } }
+            { $match: { ...orderMatch, orderDate: { $gte: startDate } } },
+            { $group: { _id: { $dateToString: { format: period === 'year' ? '%Y-%m' : '%Y-%m-%d', date: '$orderDate' } }, sales: { $sum: '$totalAmount' }, orders: { $sum: 1 } } },
+            { $sort: { '_id': 1 } },
+            { $project: { _id: 0, date: '$_id', sales: 1, orders: 1 } }
         ]);
 
         // 3. Category Distribution
         const categories = await Product.aggregate([
             { $match: { adminId, isActive: true } },
-            { $group: { _id: "$category", count: { $sum: 1 } } },
-            { $project: { _id: 0, category: { $ifNull: ["$_id", "Uncategorized"] }, count: 1 } }
+            { $group: { _id: '$category', count: { $sum: 1 } } },
+            { $project: { _id: 0, category: { $ifNull: ['$_id', 'Uncategorized'] }, count: 1 } }
         ]);
 
         // 4. Order Status Distribution
         const statusDistribution = await Order.aggregate([
-            { $match: { adminId } },
-            { $group: { _id: "$status", count: { $sum: 1 } } },
-            { $project: { _id: 0, status: "$_id", count: 1 } }
+            { $match: orderMatch },
+            { $group: { _id: '$status', count: { $sum: 1 } } },
+            { $project: { _id: 0, status: { $ifNull: ['$_id', 'UNKNOWN'] }, count: 1 } }
         ]);
 
         // 5. Top Selling Products
         const topProducts = await Order.aggregate([
-            { $match: { adminId } },
-            { $unwind: "$items" },
-            {
-                $group: {
-                    _id: "$items.productId",
-                    name: { $first: "$items.productName" },
-                    image: { $first: "$items.productImage" },
-                    quantity: { $sum: "$items.quantity" }
-                }
-            },
+            { $match: orderMatch },
+            { $unwind: '$items' },
+            { $group: { _id: '$items.productId', name: { $first: '$items.productName' }, image: { $first: '$items.productImage' }, quantity: { $sum: '$items.quantity' } } },
             { $sort: { quantity: -1 } },
             { $limit: 10 },
-            { $project: { _id: 0, productId: "$_id", name: 1, image: 1, quantity: 1 } }
+            { $project: { _id: 0, productId: '$_id', name: 1, image: 1, quantity: 1 } }
         ]);
 
-        // 6. Predictions (Consistent seasonality logic)
-        const avgDailySales = salesByDate.length > 0 ? totalRevenue / (period === 'year' ? 365 : (period === 'week' ? 7 : 30)) : 500;
-        const baseline = avgDailySales > 0 ? avgDailySales : 500;
+        // 6. Predictions (7-day forecast based on avg daily sales)
+        const baseline = totalRevenue > 0 ? totalRevenue / (period === 'year' ? 365 : period === 'week' ? 7 : 30) : 500;
         const predictions = [];
         for (let i = 1; i <= 7; i++) {
             const date = new Date();
             date.setDate(date.getDate() + i);
-            const dayOfWeek = date.getDay();
-            const seasonality = (dayOfWeek === 0 || dayOfWeek === 6) ? 1.2 : 0.9;
-            const randomness = 0.9 + Math.random() * 0.2;
-            
+            const dow = date.getDay();
+            const seasonality = (dow === 0 || dow === 6) ? 1.2 : 0.9;
             predictions.push({
                 date: date.toISOString().split('T')[0],
-                sales: Math.round(baseline * seasonality * randomness)
+                sales: Math.round(baseline * seasonality * (0.9 + Math.random() * 0.2))
             });
         }
 
-        res.json({
-            stats,
-            sales: { salesByDate },
-            categories: { categories },
-            orderStatus: { statusDistribution },
-            topProducts,
-            predictions
-        });
+        res.json({ stats, sales: { salesByDate }, categories: { categories }, orderStatus: { statusDistribution }, topProducts, predictions });
     } catch (err) {
-        console.error("DASHBOARD AGGREGATION ERROR:", err);
+        console.error('DASHBOARD AGGREGATION ERROR:', err);
         res.status(500).json({ error: err.message });
     }
 };
@@ -155,36 +130,18 @@ exports.getFullDashboard = async (req, res) => {
 exports.getGrowthData = async (req, res) => {
     try {
         const adminId = req.user.id;
+        const orderMatch = await getAdminOrderMatch(adminId);
         const now = new Date();
         const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
         const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-
-        const thisMonthRevenue = await Order.aggregate([
-            { $match: { adminId, orderDate: { $gte: thisMonthStart }, status: { $ne: 'CANCELLED' } } },
-            { $group: { _id: null, total: { $sum: "$totalAmount" } } }
+        const [thisRes, lastRes] = await Promise.all([
+            Order.aggregate([{ $match: { ...orderMatch, orderDate: { $gte: thisMonthStart }, status: { $ne: 'CANCELLED' } } }, { $group: { _id: null, total: { $sum: '$totalAmount' } } }]),
+            Order.aggregate([{ $match: { ...orderMatch, orderDate: { $gte: lastMonthStart, $lt: thisMonthStart }, status: { $ne: 'CANCELLED' } } }, { $group: { _id: null, total: { $sum: '$totalAmount' } } }])
         ]);
-
-        const lastMonthRevenue = await Order.aggregate([
-            { $match: { adminId, orderDate: { $gte: lastMonthStart, $lt: thisMonthStart }, status: { $ne: 'CANCELLED' } } },
-            { $group: { _id: null, total: { $sum: "$totalAmount" } } }
-        ]);
-
-        const current = thisMonthRevenue.length > 0 ? thisMonthRevenue[0].total : 0;
-        const previous = lastMonthRevenue.length > 0 ? lastMonthRevenue[0].total : 0;
-
-        let percentage = 0;
-        if (previous > 0) {
-            percentage = ((current - previous) / previous) * 100;
-        } else if (current > 0) {
-            percentage = 100;
-        }
-
-        res.json({
-            current,
-            previous,
-            percentage: Math.round(percentage),
-            period: 'Month-over-Month'
-        });
+        const current = thisRes.length > 0 ? thisRes[0].total : 0;
+        const previous = lastRes.length > 0 ? lastRes[0].total : 0;
+        const percentage = previous > 0 ? ((current - previous) / previous) * 100 : (current > 0 ? 100 : 0);
+        res.json({ current, previous, percentage: Math.round(percentage), period: 'Month-over-Month' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -193,17 +150,12 @@ exports.getGrowthData = async (req, res) => {
 exports.getSalesData = async (req, res) => {
     try {
         const adminId = req.user.id;
+        const orderMatch = await getAdminOrderMatch(adminId);
         const salesByDate = await Order.aggregate([
-            { $match: { adminId } },
-            {
-                $group: {
-                    _id: { $dateToString: { format: "%Y-%m-%d", date: "$orderDate" } },
-                    sales: { $sum: "$totalAmount" },
-                    orders: { $sum: 1 }
-                }
-            },
-            { $sort: { "_id": 1 } },
-            { $project: { _id: 0, date: "$_id", sales: 1, orders: 1 } }
+            { $match: orderMatch },
+            { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$orderDate' } }, sales: { $sum: '$totalAmount' }, orders: { $sum: 1 } } },
+            { $sort: { '_id': 1 } },
+            { $project: { _id: 0, date: '$_id', sales: 1, orders: 1 } }
         ]);
         res.json(salesByDate);
     } catch (err) {
@@ -216,80 +168,70 @@ exports.getCategoryDistribution = async (req, res) => {
         const adminId = req.user.id;
         const categories = await Product.aggregate([
             { $match: { adminId, isActive: true } },
-            { $group: { _id: "$category", count: { $sum: 1 } } },
-            { $project: { _id: 0, category: { $ifNull: ["$_id", "Uncategorized"] }, count: 1 } }
+            { $group: { _id: '$category', count: { $sum: 1 } } },
+            { $project: { _id: 0, category: { $ifNull: ['$_id', 'Uncategorized'] }, count: 1 } }
         ]);
         res.json({ categories });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
-}
+};
+
 exports.getOrderStatusDistribution = async (req, res) => {
     try {
         const adminId = req.user.id;
+        const orderMatch = await getAdminOrderMatch(adminId);
         const statusDistribution = await Order.aggregate([
-            { $match: { adminId } },
-            { $group: { _id: "$status", count: { $sum: 1 } } },
-            { $project: { _id: 0, status: "$_id", count: 1 } }
+            { $match: orderMatch },
+            { $group: { _id: '$status', count: { $sum: 1 } } },
+            { $project: { _id: 0, status: { $ifNull: ['$_id', 'UNKNOWN'] }, count: 1 } }
         ]);
         res.json({ statusDistribution });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 };
+
 exports.getTopSellingProducts = async (req, res) => {
     try {
         const adminId = req.user.id;
+        const orderMatch = await getAdminOrderMatch(adminId);
+        const limit = req.query.limit ? parseInt(req.query.limit) : 10;
         const topProducts = await Order.aggregate([
-            { $match: { adminId } },
-            { $unwind: "$items" },
-            {
-                $group: {
-                    _id: "$items.productId",
-                    name: { $first: "$items.productName" },
-                    image: { $first: "$items.productImage" },
-                    quantity: { $sum: "$items.quantity" }
-                }
-            },
+            { $match: orderMatch },
+            { $unwind: '$items' },
+            { $group: { _id: '$items.productId', name: { $first: '$items.productName' }, image: { $first: '$items.productImage' }, quantity: { $sum: '$items.quantity' } } },
             { $sort: { quantity: -1 } },
-            { $limit: req.query.limit ? parseInt(req.query.limit) : 10 },
-            { $project: { _id: 0, productId: "$_id", name: 1, image: 1, quantity: 1 } }
+            { $limit: limit },
+            { $project: { _id: 0, productId: '$_id', name: 1, image: 1, quantity: 1 } }
         ]);
         res.json(topProducts);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 };
+
 exports.getSalesPredictions = async (req, res) => {
     try {
         const adminId = req.user.id;
-        
-        // Calculate average daily sales from last 30 days
+        const orderMatch = await getAdminOrderMatch(adminId);
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-        
         const salesStats = await Order.aggregate([
-            { $match: { adminId, orderDate: { $gte: thirtyDaysAgo }, status: { $ne: 'CANCELLED' } } },
-            { $group: { _id: null, total: { $sum: "$totalAmount" }, count: { $sum: 1 } } }
+            { $match: { ...orderMatch, orderDate: { $gte: thirtyDaysAgo }, status: { $ne: 'CANCELLED' } } },
+            { $group: { _id: null, total: { $sum: '$totalAmount' } } }
         ]);
-        
         const totalRev = salesStats.length > 0 ? salesStats[0].total : 0;
-        const avgDailySales = totalRev / 30;
-        const baseline = avgDailySales > 0 ? avgDailySales : 500; // Default to 500 if no history
-        
+        const baseline = totalRev > 0 ? totalRev / 30 : 500;
         const predictions = [];
         for (let i = 1; i <= 7; i++) {
             const date = new Date();
             date.setDate(date.getDate() + i);
-            
-            // Simple trend: baseline with some day-of-week seasonality (weekends usually higher)
-            const dayOfWeek = date.getDay();
-            const seasonality = (dayOfWeek === 0 || dayOfWeek === 6) ? 1.2 : 0.9;
-            const randomness = 0.9 + Math.random() * 0.2;
-            
+            const dow = date.getDay();
+            const seasonality = (dow === 0 || dow === 6) ? 1.2 : 0.9;
             predictions.push({
                 date: date.toISOString().split('T')[0],
-                sales: Math.round(baseline * seasonality * randomness)
+                sales: Math.round(baseline * seasonality * (0.9 + Math.random() * 0.2))
             });
         }
         res.json(predictions);
@@ -297,5 +239,3 @@ exports.getSalesPredictions = async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 };
-
-
