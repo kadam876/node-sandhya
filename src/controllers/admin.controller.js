@@ -1,7 +1,6 @@
 const Product = require('../models/Product');
 const Order = require('../models/Order');
 const User = require('../models/User');
-const Shop = require('../models/Shop');
 const { createClient } = require('@supabase/supabase-js');
 
 // Only instantiate client if keys are present (prevents server crash before you configure .env)
@@ -52,7 +51,10 @@ exports.getDashboard = async (req, res) => {
 
 exports.addProduct = async (req, res) => {
     try {
-        let payload = { ...req.body, adminId: req.user.id };
+        // Map 'active' (from frontend) to 'isActive' (mongodb schema)
+        const isActive = req.body.active !== undefined ? req.body.active : (req.body.isActive !== undefined ? req.body.isActive : true);
+        let payload = { ...req.body, adminId: req.user.id, isActive };
+        
         if (payload.imageUrl && payload.imageUrl.startsWith('data:image/')) {
             payload.imageUrl = await uploadImageToSupabase(payload.imageUrl);
         }
@@ -98,7 +100,28 @@ exports.getAdminInfo = async (req, res) => {
 };
 
 exports.getMyUsers = async (req, res) => {
-    res.json([]);
+    try {
+        // Find all users with the CUSTOMER role
+        // Removed sort by createdAt as it is not in the schema
+        const customers = await User.find({ 
+            role: { $in: ['CUSTOMER', 'customer'] } 
+        });
+
+        // Enrich with order counts
+        const enrichedCustomers = await Promise.all(customers.map(async (customer) => {
+            const orderCount = await Order.countDocuments({ userId: customer._id.toString() });
+            const customerObj = customer.toJSON();
+            return {
+                ...customerObj,
+                orderCount
+            };
+        }));
+
+        res.json(enrichedCustomers);
+    } catch (err) {
+        console.error("GET MY USERS ERROR:", err);
+        res.status(500).json({ error: err.message });
+    }
 };
 
 exports.getCatalogues = async (req, res) => {
@@ -107,14 +130,19 @@ exports.getCatalogues = async (req, res) => {
 
 exports.updateProduct = async (req, res) => {
     try {
-        let payload = { ...req.body };
-        if (payload.imageUrl && payload.imageUrl.startsWith('data:image/')) {
-            payload.imageUrl = await uploadImageToSupabase(payload.imageUrl);
+        // Map 'active' (from frontend) to 'isActive' (mongodb schema)
+        const updates = { ...req.body };
+        if (updates.active !== undefined) {
+            updates.isActive = updates.active;
+        }
+
+        if (updates.imageUrl && updates.imageUrl.startsWith('data:image/')) {
+            updates.imageUrl = await uploadImageToSupabase(updates.imageUrl);
         }
 
         const product = await Product.findOneAndUpdate(
             { _id: req.params.id, adminId: req.user.id },
-            payload,
+            updates,
             { new: true }
         );
         if (!product) return res.status(404).json({ error: 'Product not found or unauthorized' });
@@ -144,6 +172,17 @@ exports.getOrders = async (req, res) => {
     }
 };
 
+exports.getOrdersByStatus = async (req, res) => {
+    try {
+        const { status } = req.params;
+        // In single shop mode, we return all orders of this status
+        const orders = await Order.find({ status }).sort({ orderDate: -1 });
+        res.json(orders.map(o => o.toJSON()));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
 exports.updateOrderStatus = async (req, res) => {
     try {
         const order = await Order.findByIdAndUpdate(
@@ -158,13 +197,13 @@ exports.updateOrderStatus = async (req, res) => {
     }
 };
 
-// --- Platform Owner (OWNER) Methods ---
+// --- Platform Stats (Simplified for single shop) ---
 
 exports.getPlatformStats = async (req, res) => {
     try {
-        const totalShops = await User.countDocuments({ role: 'SHOP_OWNER' });
-        const totalUsers = await User.countDocuments({ role: 'CUSTOMER' });
+        const totalUsers = await User.countDocuments({ role: { $in: ['CUSTOMER', 'customer'] } });
         const totalOrders = await Order.countDocuments({});
+        const totalProducts = await Product.countDocuments({ isActive: true });
 
         const revenueResult = await Order.aggregate([
             { $match: { status: { $in: ['PAID', 'DELIVERED', 'SHIPPED'] } } },
@@ -172,227 +211,15 @@ exports.getPlatformStats = async (req, res) => {
         ]);
         const totalRevenue = revenueResult.length > 0 ? revenueResult[0].total : 0;
 
-        // Calculate real growth (this month vs last month)
-        const now = new Date();
-        const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-        const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-        
-        const thisMonthRevenue = await Order.aggregate([
-            { $match: { orderDate: { $gte: thisMonthStart }, status: { $in: ['PAID', 'DELIVERED', 'SHIPPED'] } } },
-            { $group: { _id: null, total: { $sum: "$totalAmount" } } }
-        ]);
-        
-        const lastMonthRevenue = await Order.aggregate([
-            { $match: { orderDate: { $gte: lastMonthStart, $lt: thisMonthStart }, status: { $in: ['PAID', 'DELIVERED', 'SHIPPED'] } } },
-            { $group: { _id: null, total: { $sum: "$totalAmount" } } }
-        ]);
-
-        const currentRev = thisMonthRevenue.length > 0 ? thisMonthRevenue[0].total : 0;
-        const previousRev = lastMonthRevenue.length > 0 ? lastMonthRevenue[0].total : 0;
-        
-        let growth = 0;
-        if (previousRev > 0) {
-            growth = ((currentRev - previousRev) / previousRev) * 100;
-        } else if (currentRev > 0) {
-            growth = 100; // 100% growth if we had nothing last month
-        }
-        
         res.json({
-            totalShops,
+            totalShops: 1, // Always 1 in single shop mode
             totalUsers,
             totalOrders,
             totalRevenue,
-            platformGrowth: Math.round(growth)
+            totalProducts,
+            platformGrowth: 0
         });
     } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-};
-
-exports.getAllShops = async (req, res) => {
-    try {
-        // Find all shop registrations from the Shop model
-        const shops = await Shop.find({}).sort({ createdAt: -1 });
-
-        // Enrich with user email/name from User model to be safe
-        const enrichedShops = await Promise.all(shops.map(async (shop) => {
-            const user = await User.findById(shop.ownerId);
-            const shopObj = shop.toJSON();
-            return {
-                ...shopObj,
-                name: user ? user.name : 'Unknown Owner',
-                email: shop.ownerEmail || (user ? user.email : 'No Email'),
-                verified: shop.status === 'APPROVED' || (user ? user.isVerified : false)
-            };
-        }));
-
-        res.json(enrichedShops);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-};
-
-exports.verifyShopStatus = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { status } = req.query; // true or false string from frontend
-
-        const isApproved = status === 'true';
-        const shopStatus = isApproved ? 'APPROVED' : 'REJECTED';
-
-        const shop = await Shop.findByIdAndUpdate(id, { status: shopStatus }, { new: true });
-        if (!shop) return res.status(404).json({ message: 'Shop application not found' });
-
-        // Sync with User verification status
-        await User.findByIdAndUpdate(shop.ownerId, { isVerified: isApproved });
-
-        res.json({ success: true, message: `Shop ${shopStatus.toLowerCase()} successfully`, shop });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-};
-
-exports.getPlatformSalesGrowth = async (req, res) => {
-    try {
-        const sixMonthsAgo = new Date();
-        sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
-
-        const growth = await Order.aggregate([
-            { $match: { orderDate: { $gte: sixMonthsAgo } } },
-            {
-                $group: {
-                    _id: { $dateToString: { format: "%Y-%m", date: "$orderDate" } },
-                    revenue: { $sum: "$totalAmount" },
-                    orderCount: { $sum: 1 }
-                }
-            },
-            { $sort: { "_id": 1 } },
-            {
-                $project: {
-                    _id: 0,
-                    month: "$_id",
-                    revenue: 1,
-                    orders: "$orderCount"
-                }
-            }
-        ]);
-
-        // Map YYYY-MM to Month Name
-        const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-        const formattedGrowth = growth.map(item => {
-            const [year, month] = item.month.split('-');
-            return {
-                ...item,
-                month: monthNames[parseInt(month) - 1]
-            };
-        });
-
-        res.json(formattedGrowth);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-};
-
-exports.getPlatformOnboarding = async (req, res) => {
-    try {
-        const sixMonthsAgo = new Date();
-        sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
-
-        const onboarding = await User.aggregate([
-            { $match: { role: 'SHOP_OWNER', createdAt: { $gte: sixMonthsAgo } } },
-            {
-                $group: {
-                    _id: { $dateToString: { format: "%Y-%m", date: "$createdAt" } },
-                    partners: { $sum: 1 }
-                }
-            },
-            { $sort: { "_id": 1 } },
-            { $project: { _id: 0, month: "$_id", partners: 1 } }
-        ]);
-
-        const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-        const formattedOnboarding = onboarding.map(item => {
-            const [year, month] = item.month.split('-');
-            return {
-                ...item,
-                month: monthNames[parseInt(month) - 1]
-            };
-        });
-
-        res.json(formattedOnboarding);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-};
-
-exports.getPlatformOrders = async (req, res) => {
-    try {
-        const orders = await Order.find({}).sort({ orderDate: -1 }).limit(100);
-        
-        const enrichedOrders = await Promise.all(orders.map(async (order) => {
-            const shopOwner = await User.findById(order.adminId);
-            const customer = await User.findById(order.userId);
-            const orderObj = order.toJSON();
-            return {
-                ...orderObj,
-                shopName: shopOwner ? shopOwner.shopName : 'Direct Sale',
-                customerName: customer ? customer.name : 'Guest Customer',
-                customerEmail: customer ? customer.email : order.userId
-            };
-        }));
-
-        res.json(enrichedOrders);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-};
-
-exports.getPlatformInventory = async (req, res) => {
-    try {
-        const products = await Product.find({}).sort({ adminId: 1 }).limit(200);
-        
-        const enrichedProducts = await Promise.all(products.map(async (product) => {
-            const shopOwner = await User.findById(product.adminId);
-            const productObj = product.toJSON();
-            return {
-                ...productObj,
-                shopName: shopOwner ? shopOwner.shopName : 'Platform Stock'
-            };
-        }));
-
-        res.json(enrichedProducts);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-};
-
-exports.deleteShopRequest = async (req, res) => {
-    try {
-        const { id } = req.params;
-        console.log(`[Admin] Deleting shop request: ${id}`);
-        
-        const shop = await Shop.findById(id);
-        if (!shop) {
-            console.warn(`[Admin] Shop ${id} not found`);
-            return res.status(404).json({ message: 'Shop application not found' });
-        }
-
-        console.log(`[Admin] Found shop, ownerId: ${shop.ownerId}. Deleting owner...`);
-
-        // Delete the associated user as well to clean up the DB
-        if (shop.ownerId) {
-            await User.findByIdAndDelete(shop.ownerId);
-            // Delete the products associated with this shop (if any)
-            await Product.deleteMany({ adminId: shop.ownerId });
-        }
-        
-        // Finally delete the shop record
-        await Shop.findByIdAndDelete(id);
-
-        console.log(`[Admin] Shop ${id} deleted successfully`);
-        res.json({ success: true, message: 'Shop request and associated account deleted successfully' });
-    } catch (err) {
-        console.error(`[Admin] Shop deletion CRASH for ${req.params.id}:`, err);
         res.status(500).json({ error: err.message });
     }
 };

@@ -11,7 +11,6 @@ const analyticsRoutes = require('./src/routes/analytics.routes');
 const tryonRoutes = require('./src/routes/tryon.routes');
 const adminRoutes = require('./src/routes/admin.routes');
 const feedbackRoutes = require('./src/routes/feedback.routes');
-const shopRoutes = require('./src/routes/shop.routes');
 
 const app = express();
 
@@ -33,8 +32,6 @@ app.use('/api/analytics', analyticsRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/tryon', tryonRoutes);
 app.use('/api/feedback', feedbackRoutes);
-app.use('/api/shops', shopRoutes);
-app.use('/api/shop', shopRoutes); // Frontend calls /api/shop/setup
 
 // Health Check
 app.get('/api/health', (req, res) => {

@@ -1,5 +1,4 @@
 const User = require('../models/User');
-const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
 // Token Generator replicating Spring Security output
@@ -22,9 +21,9 @@ exports.register = async (req, res) => {
             return res.status(400).json({ success: false, message: 'User already exists' });
         }
 
-        const hashedPassword = await bcrypt.hash(password, 8); // Same strength as backend
+        // No hashing - storing plain text as requested
         const newUser = new User({
-            name, email, password: hashedPassword, phone, role
+            name, email, password, phone, role
         });
         await newUser.save();
 
@@ -46,7 +45,7 @@ exports.login = async (req, res) => {
             return res.status(400).json({ success: false, error: 'Invalid credentials' });
         }
 
-        const isMatch = await bcrypt.compare(password, user.password);
+        const isMatch = (password === user.password);
         if (!isMatch) {
             return res.status(400).json({ success: false, error: 'Invalid credentials' });
         }

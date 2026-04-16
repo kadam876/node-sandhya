@@ -3,10 +3,17 @@ const Product = require('../models/Product');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
 
-const razorpay = new Razorpay({
-    key_id: process.env.RAZORPAY_KEY_ID,
-    key_secret: process.env.RAZORPAY_KEY_SECRET
-});
+let razorpay;
+try {
+    if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
+        razorpay = new Razorpay({
+            key_id: process.env.RAZORPAY_KEY_ID,
+            key_secret: process.env.RAZORPAY_KEY_SECRET
+        });
+    }
+} catch (err) {
+    console.error('Razorpay initialization error:', err);
+}
 
 exports.createOrder = async (req, res) => {
     try {
@@ -45,10 +52,13 @@ exports.createOrder = async (req, res) => {
             shippingAddress,
             paymentMethod,
             orderType: orderType || 'RETAIL',
-            status: 'PENDING'
+            status: 'PENDING_CONFIRMATION'
         });
 
         if (paymentMethod === 'RAZORPAY') {
+            if (!razorpay) {
+                return res.status(400).json({ error: "Online payment is currently unavailable. Please use Cash on Delivery." });
+            }
             const options = {
                 amount: Math.round(finalTotal * 100), // amount in the smallest currency unit (paise)
                 currency: "INR",
@@ -85,6 +95,9 @@ exports.getMyOrders = async (req, res) => {
 
 exports.verifyPayment = async (req, res) => {
     try {
+        if (!process.env.RAZORPAY_KEY_SECRET) {
+            return res.status(500).json({ error: "Razorpay configuration missing on server." });
+        }
         const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
 
         const body = razorpay_order_id + "|" + razorpay_payment_id;

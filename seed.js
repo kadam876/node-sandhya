@@ -1,6 +1,6 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs');
+const mongoose = require('mongoose');
 const User = require('./src/models/User');
 const Product = require('./src/models/Product');
 const Order = require('./src/models/Order');
@@ -39,11 +39,10 @@ async function seed() {
     // 1. Find or create admin
     let admin = await User.findOne({ email: ADMIN_EMAIL });
     if (!admin) {
-      const hashed = await bcrypt.hash(ADMIN_PASSWORD, 8);
       admin = new User({
         name: 'Sandhya Fashion Owner',
         email: ADMIN_EMAIL,
-        password: hashed,
+        password: ADMIN_PASSWORD,
         role: 'OWNER',
         shopName: 'Sandhya Fashion',
         isVerified: true,
@@ -92,11 +91,10 @@ async function seed() {
     // 4. Sample customer
     let customer = await User.findOne({ email: 'customer@test.com' });
     if (!customer) {
-      const hashed = await bcrypt.hash('customer123', 8);
       customer = new User({
         name: 'Test Customer',
         email: 'customer@test.com',
-        password: hashed,
+        password: 'customer123',
         role: 'CUSTOMER',
         isVerified: true,
         isActive: true,

@@ -1,24 +1,22 @@
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 
-// Helper: match orders belonging to this admin — by adminId field OR by products they own
-const getAdminOrderMatch = async (adminId) => {
-    const ownedProductIds = await Product.find({ adminId, isActive: true }).distinct('_id');
-    const ownedProductIdStrings = ownedProductIds.map(id => id.toString());
-    return {
-        $or: [
-            { adminId },
-            { 'items.productId': { $in: ownedProductIdStrings } }
-        ]
-    };
+// Helper: match orders belonging to this admin
+const getAdminOrderMatch = async (user) => {
+    // In single-shop mode, the owner sees all orders.
+    return {};
 };
 
 exports.getDashboardStats = async (req, res) => {
     try {
-        const adminId = req.user.id;
-        const totalProducts = await Product.countDocuments({ adminId, isActive: true });
-        const lowStockItems = await Product.countDocuments({ adminId, isActive: true, stockQuantity: { $lt: 20 } });
-        const orderMatch = await getAdminOrderMatch(adminId);
+        const user = req.user;
+        let productMatch = { isActive: true };
+        if (user.role?.toUpperCase() !== 'OWNER') productMatch.adminId = user.id;
+
+        const totalProducts = await Product.countDocuments(productMatch);
+        const lowStockItems = await Product.countDocuments({ ...productMatch, stockQuantity: { $lt: 20 } });
+        
+        const orderMatch = await getAdminOrderMatch(user);
         const totalOrders = await Order.countDocuments(orderMatch);
         const revenueResult = await Order.aggregate([
             { $match: orderMatch },
@@ -33,13 +31,16 @@ exports.getDashboardStats = async (req, res) => {
 
 exports.getFullDashboard = async (req, res) => {
     try {
-        const adminId = req.user.id;
+        const user = req.user;
         const { period = 'month' } = req.query;
-        const orderMatch = await getAdminOrderMatch(adminId);
+        const orderMatch = await getAdminOrderMatch(user);
 
         // 1. Stats
-        const totalProducts = await Product.countDocuments({ adminId, isActive: true });
-        const lowStockItems = await Product.countDocuments({ adminId, isActive: true, stockQuantity: { $lt: 20 } });
+        let productMatch = { isActive: true };
+        if (user.role?.toUpperCase() !== 'OWNER') productMatch.adminId = user.id;
+
+        const totalProducts = await Product.countDocuments(productMatch);
+        const lowStockItems = await Product.countDocuments({ ...productMatch, stockQuantity: { $lt: 20 } });
         const totalOrders = await Order.countDocuments(orderMatch);
         const revenueResult = await Order.aggregate([
             { $match: orderMatch },
@@ -84,7 +85,7 @@ exports.getFullDashboard = async (req, res) => {
 
         // 3. Category Distribution
         const categories = await Product.aggregate([
-            { $match: { adminId, isActive: true } },
+            { $match: productMatch },
             { $group: { _id: '$category', count: { $sum: 1 } } },
             { $project: { _id: 0, category: { $ifNull: ['$_id', 'Uncategorized'] }, count: 1 } }
         ]);
@@ -106,7 +107,7 @@ exports.getFullDashboard = async (req, res) => {
             { $project: { _id: 0, productId: '$_id', name: 1, image: 1, quantity: 1 } }
         ]);
 
-        // 6. Predictions (7-day forecast based on avg daily sales)
+        // 6. Predictions
         const baseline = totalRevenue > 0 ? totalRevenue / (period === 'year' ? 365 : period === 'week' ? 7 : 30) : 500;
         const predictions = [];
         for (let i = 1; i <= 7; i++) {
@@ -129,8 +130,7 @@ exports.getFullDashboard = async (req, res) => {
 
 exports.getGrowthData = async (req, res) => {
     try {
-        const adminId = req.user.id;
-        const orderMatch = await getAdminOrderMatch(adminId);
+        const orderMatch = await getAdminOrderMatch(req.user);
         const now = new Date();
         const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
         const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
@@ -149,8 +149,7 @@ exports.getGrowthData = async (req, res) => {
 
 exports.getSalesData = async (req, res) => {
     try {
-        const adminId = req.user.id;
-        const orderMatch = await getAdminOrderMatch(adminId);
+        const orderMatch = await getAdminOrderMatch(req.user);
         const salesByDate = await Order.aggregate([
             { $match: orderMatch },
             { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$orderDate' } }, sales: { $sum: '$totalAmount' }, orders: { $sum: 1 } } },
@@ -165,9 +164,12 @@ exports.getSalesData = async (req, res) => {
 
 exports.getCategoryDistribution = async (req, res) => {
     try {
-        const adminId = req.user.id;
+        const user = req.user;
+        let productMatch = { isActive: true };
+        if (user.role?.toUpperCase() !== 'OWNER') productMatch.adminId = user.id;
+
         const categories = await Product.aggregate([
-            { $match: { adminId, isActive: true } },
+            { $match: productMatch },
             { $group: { _id: '$category', count: { $sum: 1 } } },
             { $project: { _id: 0, category: { $ifNull: ['$_id', 'Uncategorized'] }, count: 1 } }
         ]);
@@ -179,8 +181,7 @@ exports.getCategoryDistribution = async (req, res) => {
 
 exports.getOrderStatusDistribution = async (req, res) => {
     try {
-        const adminId = req.user.id;
-        const orderMatch = await getAdminOrderMatch(adminId);
+        const orderMatch = await getAdminOrderMatch(req.user);
         const statusDistribution = await Order.aggregate([
             { $match: orderMatch },
             { $group: { _id: '$status', count: { $sum: 1 } } },
@@ -194,8 +195,7 @@ exports.getOrderStatusDistribution = async (req, res) => {
 
 exports.getTopSellingProducts = async (req, res) => {
     try {
-        const adminId = req.user.id;
-        const orderMatch = await getAdminOrderMatch(adminId);
+        const orderMatch = await getAdminOrderMatch(req.user);
         const limit = req.query.limit ? parseInt(req.query.limit) : 10;
         const topProducts = await Order.aggregate([
             { $match: orderMatch },
@@ -213,8 +213,7 @@ exports.getTopSellingProducts = async (req, res) => {
 
 exports.getSalesPredictions = async (req, res) => {
     try {
-        const adminId = req.user.id;
-        const orderMatch = await getAdminOrderMatch(adminId);
+        const orderMatch = await getAdminOrderMatch(req.user);
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
         const salesStats = await Order.aggregate([
